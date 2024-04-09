@@ -1,0 +1,84 @@
+name: test
+
+on:
+    push:
+      branches:
+        - '**'
+      paths-ignore:
+        - '**.md'
+        - 'LICENSE'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - lua-version: "5.1.5"
+            luarocks-version: "3.11.0"
+            platform: "linux"
+          - lua-version: "5.2"
+            luarocks-version: "3.9.2"
+            platform: "linux"
+          - lua-version: "lj-v2.1"
+            luarocks-version: "3.9.2"
+    steps:
+    -
+      name: Checkout
+      uses: actions/checkout@v2
+      with:
+        submodules: 'true'
+    -
+      name: Setup Lua ${{ matrix.lua-version }}
+      uses: ./
+      with:
+        lua-version: ${{ matrix.lua-version }}
+        luarocks-version: ${{ matrix.luarocks-version }}
+        platform: ${{ matrix.platform }}
+    -
+      name: Test installed Lua version equals ${{ matrix.lua-version }}
+      shell: bash
+      run: |
+        INSTVER=$(lua -v 2>&1 | tr '\n' ' ')
+        TARGET="${{ matrix.lua-version }}"
+
+        node <<EOF
+        let actual = '$INSTVER'.match(/Lua(?:JIT)?\s+([^\s]+)/i)[1];
+        let expect = '$TARGET';
+
+        if(expect.startsWith('lj-v')) {
+            expect = expect.slice(4);
+        } else {
+            expect = expect;
+        }
+        console.log("Installed version:", actual);
+        console.log(" Expected version:", expect);
+
+        if(actual.toLowerCase().startsWith(expect.toLowerCase())){
+            console.log("Lua version is as expected.");
+            process.exit(0);
+        }
+        console.log("Version mismatch: expected " + expect + ", but got " + actual);
+        process.exit(1);
+        EOF
+    -
+      name: Test installed LuaRocks version equals ${{ matrix.luarocks-version }}
+      shell: bash
+      run: |
+        INSTVER=$(luarocks --version | tr '\n' ' ')
+        TARGET="${{ matrix.luarocks-version }}"
+
+        node <<EOF
+        let actual = "$INSTVER".match(/luarocks\s+([^\s]+)/i)[1];
+        let expect = '$TARGET';
+
+        console.log("Installed version:", actual);
+        console.log(" Expected version:", expect);
+
+        if(actual.toLowerCase().startsWith(expect.toLowerCase())){
+            console.log("LuaRocks version is as expected.");
+            process.exit(0);
+        }
+        console.log("Version mismatch: expected " + expect + ", but got " + actual);
+        process.exit(1);
+        EOF
