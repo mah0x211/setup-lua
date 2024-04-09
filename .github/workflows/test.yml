@@ -1,0 +1,37 @@
+name: Test Action
+
+on:
+    push:
+      branches:
+        - '**'
+      paths-ignore:
+        - '**.md'
+        - 'LICENSE'
+
+jobs:
+  test:
+    name: Test Setup Lua Action
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        lua: ['5.1.5', '5.2.4', '5.3.6', '5.4.6', 'latest']
+
+    steps:
+    -
+      name: Checkout Repository
+      uses: actions/checkout@v4
+    -
+      name: Self test
+      uses: ./
+      with:
+        lua-version: ${{ matrix.lua }}
+        luarocks-version: 'latest'
+    -
+      name: Verify installation
+      run: |
+        lua -v
+        luarocks --version
+        luarocks install busted
+        busted --version
