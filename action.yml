@@ -8,7 +8,7 @@ branding:
 inputs:
   lua-version:
     description: 'Lua version to install (or "latest" for the latest version)'
-    required: true
+    required: false
     default: 'latest'
   luarocks-version:
     description: 'LuaRocks version to install (or "latest" for the latest version)'
