@@ -144,8 +144,9 @@ runs:
         # Prepare Lua version part
         if [[ "${{ inputs.lua-version }}" != "" ]]; then
           INSTALL_SPEC="${{ inputs.lua-version }}"
-          if [[ "${{ inputs.lua-version }}" == 5.4* ]]; then
-            PLATFORM=""
+          # remove PLATFORM variables if prefixed with "lj-"
+          if [[ "${{ inputs.lua-version }}" == lj-* ]]; then
+            unset PLATFORM
           fi
         fi
 
