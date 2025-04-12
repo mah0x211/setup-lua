@@ -1,0 +1,176 @@
+name: 'Setup Lua and LuaRocks'
+description: 'Set up a Lua and LuaRocks environment using lenv'
+author: 'mah0x211'
+branding:
+  icon: 'package'
+  color: 'blue'
+
+inputs:
+  lua-version:
+    description: 'Lua version to install (or "latest" for the latest version)'
+    required: true
+    default: 'latest'
+  luarocks-version:
+    description: 'LuaRocks version to install (or "latest" for the latest version)'
+    required: false
+    default: 'latest'
+
+runs:
+  using: 'composite'
+  steps:
+    -
+      name: Determine OS and architecture
+      id: system-info
+      shell: bash
+      run: |
+        # Determine OS (first letter capitalized as per release assets)
+        if [[ "$RUNNER_OS" == "Linux" ]]; then
+          echo "OS_NAME=Linux" >> $GITHUB_OUTPUT
+          echo "PLATFORM=linux" >> $GITHUB_OUTPUT
+        elif [ "$RUNNER_OS" == "macOS" ]; then
+          echo "OS_NAME=Darwin" >> $GITHUB_OUTPUT
+          echo "PLATFORM=macosx" >> $GITHUB_OUTPUT
+        else
+          echo "Unsupported OS: $RUNNER_OS" >&2
+          exit 1
+        fi
+
+        # Determine architecture (as per release assets)
+        ARCH=$(uname -m)
+        if [[ "$ARCH" == "x86_64" || "$ARCH" == "amd64" ]]; then
+          echo "ARCH=x86_64" >> $GITHUB_OUTPUT
+        elif [[ "$ARCH" == "arm64" || "$ARCH" == "aarch64" ]]; then
+          echo "ARCH=arm64" >> $GITHUB_OUTPUT
+        elif [[ "$ARCH" == "i386" || "$ARCH" == "i686" ]]; then
+          echo "ARCH=i386" >> $GITHUB_OUTPUT
+        else
+          echo "Unsupported architecture: $ARCH" >&2
+          exit 1
+        fi
+
+    -
+      name: Install dependencies
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" == "Linux" ]; then
+          sudo apt-get install -q libreadline-dev libncurses-dev -y
+        elif [ "$RUNNER_OS" == "macOS" ]; then
+          brew install readline ncurses
+        fi
+
+    -
+      name: Install lenv
+      shell: bash
+      run: |
+        LENV_VERSION="v0.9.0"
+        OS="${{ steps.system-info.outputs.OS_NAME }}"
+        ARCH="${{ steps.system-info.outputs.ARCH }}"
+
+        # Create temp directory for downloads
+        WORK_DIR=$(pwd)
+        TEMP_DIR=$(mktemp -d)
+        cd $TEMP_DIR
+
+        # Download archive
+        ARCHIVE_NAME="lenv_${OS}_${ARCH}.tar.gz"
+        DOWNLOAD_URL="https://github.com/mah0x211/lenv/releases/download/${LENV_VERSION}/${ARCHIVE_NAME}"
+        echo "Downloading lenv from: $DOWNLOAD_URL"
+        curl -L -o ${ARCHIVE_NAME} ${DOWNLOAD_URL}
+
+        # Download checksums file
+        CHECKSUMS_URL="https://github.com/mah0x211/lenv/releases/download/${LENV_VERSION}/checksums.txt"
+        curl -L -o checksums.txt ${CHECKSUMS_URL}
+
+        # Extract expected checksum for our file
+        EXPECTED_CHECKSUM=$(grep "${ARCHIVE_NAME}" checksums.txt | awk '{print $1}')
+
+        if [ -z "$EXPECTED_CHECKSUM" ]; then
+          echo "Warning: Could not find checksum for ${ARCHIVE_NAME}" >&2
+        else
+          # Calculate actual checksum
+          if command -v shasum &> /dev/null; then
+            ACTUAL_CHECKSUM=$(shasum -a 256 ${ARCHIVE_NAME} | awk '{print $1}')
+          elif command -v sha256sum &> /dev/null; then
+            ACTUAL_CHECKSUM=$(sha256sum ${ARCHIVE_NAME} | awk '{print $1}')
+          else
+            echo "Warning: No checksum utility found, skipping verification" >&2
+          fi
+
+          # Verify checksum
+          if [ ! -z "$ACTUAL_CHECKSUM" ] && [ "$EXPECTED_CHECKSUM" != "$ACTUAL_CHECKSUM" ]; then
+            echo "Checksum verification failed!" >&2
+            echo "Expected: $EXPECTED_CHECKSUM" >&2
+            echo "Actual: $ACTUAL_CHECKSUM" >&2
+            exit 1
+          else
+            echo "Checksum verification passed!"
+          fi
+        fi
+
+        # Extract archive
+        tar -xzf ${ARCHIVE_NAME}
+
+        # Verify the extracted lenv executable
+        ./lenv help
+
+        # Move lenv to working directory and set PATH
+        cd $WORK_DIR
+        mv $TEMP_DIR/lenv .
+        chmod +x lenv
+        mkdir -p ./.lenv/bin
+        mv ./lenv ./.lenv/bin/
+        export PATH="$(pwd)/.lenv/bin:$PATH"
+
+        # Run setup to create required directories (in project mode)
+        lenv -p setup
+        # Fetch remote version lists
+        lenv -p fetch
+
+        # Add lenv bin to PATH
+        echo "$(pwd)/.lenv/bin" >> $GITHUB_PATH
+        echo "$(lenv path bin)" >> $GITHUB_PATH
+
+        # Clean up
+        cd - > /dev/null
+        rm -rf $TEMP_DIR
+
+    -
+      name: Install Lua and LuaRocks
+      shell: bash
+      run: |
+        INSTALL_SPEC=""
+        PLATFORM="${{ steps.system-info.outputs.PLATFORM }}"
+
+        # Prepare Lua version part
+        if [[ "${{ inputs.lua-version }}" != "" ]]; then
+          INSTALL_SPEC="${{ inputs.lua-version }}"
+          if [[ "${{ inputs.lua-version }}" == 5.4* ]]; then
+            PLATFORM=""
+          fi
+        fi
+
+        # Prepare LuaRocks version part
+        if [[ "${{ inputs.luarocks-version }}" != "" ]]; then
+          INSTALL_SPEC="${INSTALL_SPEC}:${{ inputs.luarocks-version }}"
+        fi
+
+        # Install Lua and/or LuaRocks with the specified versions (in project mode)
+        echo "Installing with spec: ${INSTALL_SPEC}"
+        lenv -p install ${INSTALL_SPEC} ${PLATFORM}
+
+        # Verify Lua installation if a version was specified
+        if [[ "${{ inputs.lua-version }}" != "" ]]; then
+          lua -v
+          # Add Lua lib and clib paths to environment variables
+          LUA_PATH="$(lenv path lualib);;"
+          LUA_CPATH="$(lenv path luaclib);;"
+          echo "LUA_PATH="$LUA_PATH" >> $GITHUB_ENV
+          echo "LUA_CPATH="$LUA_CPATH" >> $GITHUB_ENV
+        fi
+
+        # Verify LuaRocks installation if a version was specified
+        if [[ "${{ inputs.luarocks-version }}" != "" ]]; then
+          luarocks --version
+          # Add LuaRocks bin to PATH
+          echo "$(luarocks path --lr-bin)" >> $GITHUB_PATH
+        fi
