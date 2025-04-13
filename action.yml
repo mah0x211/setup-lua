@@ -163,10 +163,11 @@ runs:
         if [[ "${{ inputs.lua-version }}" != "" ]]; then
           lua -v
           # Add Lua lib and clib paths to environment variables
-          LUA_PATH="$(lenv path lualib);;"
-          LUA_CPATH="$(lenv path luaclib);;"
-          echo "LUA_PATH="$LUA_PATH" >> $GITHUB_ENV
-          echo "LUA_CPATH="$LUA_CPATH" >> $GITHUB_ENV
+          echo "export LUA_PATH and LUA_CPATH to environment variables"
+          LUA_PATH="$(lenv path lualib)"
+          echo "LUA_PATH=$LUA_PATH" | tee -a $GITHUB_ENV
+          LUA_CPATH="$(lenv path luaclib)"
+          echo "LUA_CPATH=$LUA_CPATH" | tee -a $GITHUB_ENV
         fi
 
         # Verify LuaRocks installation if a version was specified
