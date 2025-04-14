@@ -33,6 +33,7 @@ This action supports installing any version of Lua, LuaJIT, or LuaRocks by autom
 |:------------|:-------------|---------|---------|
 | `lua-version` | Any version available on the [Lua releases](https://www.lua.org/ftp/) page. If you want to use LuaJIT, you can specify any branch available in the [LuaJIT repository](https://github.com/LuaJIT/LuaJIT) with the `lj-` prefix (e.g., `lj-v2.1`). | No | `latest`  |
 | `luarocks-version` | Any version available on the [LuaRocks releases](https://luarocks.org/releases) page. Recommended: use the `latest` version of LuaRocks. | No | `latest` |
+| `cache` | Cache the Lua and LuaRocks installation. This is useful for speeding up the installation process in subsequent runs. | No | `true` |
 
 
 ## Installation Location

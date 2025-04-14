@@ -14,6 +14,10 @@ inputs:
     description: 'LuaRocks version to install (or "latest" for the latest version)'
     required: false
     default: 'latest'
+  cache:
+    description: 'Cache the lenv installation'
+    required: false
+    default: 'true'
 
 runs:
   using: 'composite'
@@ -49,6 +53,18 @@ runs:
         fi
 
     -
+      name: Check for lenv cache
+      id: cache
+      if: ${{ inputs.cache == 'true' }}
+      uses: actions/cache@v4
+      with:
+        path: .lenv
+        key: ${{ runner.os }}-${{ steps.system-info.outputs.ARCH }}-lenv-${{ inputs.lua-version }}-${{ inputs.luarocks-version }}
+        restore-keys: |
+          ${{ runner.os }}-${{ steps.system-info.outputs.ARCH }}-lenv-${{ inputs.lua-version }}-
+          ${{ runner.os }}-${{ steps.system-info.outputs.ARCH }}-lenv-
+
+    -
       name: Install dependencies
       shell: bash
       run: |
@@ -60,6 +76,7 @@ runs:
 
     -
       name: Install lenv
+      if: ${{ inputs.cache != 'true' || steps.cache.outputs.cache-hit != 'true' }}
       shell: bash
       run: |
         LENV_VERSION="v0.9.0"
@@ -128,7 +145,7 @@ runs:
 
         # Add lenv bin to PATH
         echo "$(pwd)/.lenv/bin" >> $GITHUB_PATH
-        echo "$(lenv path bin)" >> $GITHUB_PATH
+        echo "$(lenv -p path bin)" >> $GITHUB_PATH
 
         # Clean up
         cd - > /dev/null
@@ -136,6 +153,7 @@ runs:
 
     -
       name: Install Lua and LuaRocks
+      if: ${{ inputs.cache != 'true' || steps.cache.outputs.cache-hit != 'true' }}
       shell: bash
       run: |
         INSTALL_SPEC=""
@@ -159,20 +177,34 @@ runs:
         echo "Installing with spec: ${INSTALL_SPEC}"
         lenv -p install ${INSTALL_SPEC} ${PLATFORM}
 
-        # Verify Lua installation if a version was specified
+    -
+      name: Setup PATH and environment variables
+      shell: bash
+      run: |
+        export PATH="$(pwd)/.lenv/bin:$PATH"
+        export PATH="$(lenv -p path bin):$PATH"
+
+        echo "$(pwd)/.lenv/bin" >> $GITHUB_PATH
+        echo "$(lenv -p path bin)" >> $GITHUB_PATH
+
         if [[ "${{ inputs.lua-version }}" != "" ]]; then
           lua -v
           # Add Lua lib and clib paths to environment variables
           echo "export LUA_PATH and LUA_CPATH to environment variables"
-          LUA_PATH="$(lenv path lualib)"
+          LUA_PATH="$(lenv -p path lualib)"
           echo "LUA_PATH=$LUA_PATH" | tee -a $GITHUB_ENV
-          LUA_CPATH="$(lenv path luaclib)"
+          LUA_CPATH="$(lenv -p path luaclib)"
           echo "LUA_CPATH=$LUA_CPATH" | tee -a $GITHUB_ENV
         fi
 
-        # Verify LuaRocks installation if a version was specified
         if [[ "${{ inputs.luarocks-version }}" != "" ]]; then
           luarocks --version
           # Add LuaRocks bin to PATH
           echo "$(luarocks path --lr-bin)" >> $GITHUB_PATH
         fi
+
+outputs:
+  cache-hit:
+    description: 'Whether the cache was hit'
+    value: ${{ steps.cache.outputs.cache-hit }}
+
