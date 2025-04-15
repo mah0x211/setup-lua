@@ -6,14 +6,13 @@ branding:
   color: 'blue'
 
 inputs:
-  lua-version:
-    description: 'Lua version to install (or "latest" for the latest version)'
+  versions:
+    description: 'Space-separated list of Lua:LuaRocks versions to install. Format: <lua-version>:<luarocks-version> (e.g. 5.1.5:latest lj-v2.1:3.8.0)'
     required: false
-    default: 'latest'
-  luarocks-version:
-    description: 'LuaRocks version to install (or "latest" for the latest version)'
+    default: 'latest:latest'
+  active-version:
+    description: 'Which Lua:LuaRocks version to use'
     required: false
-    default: 'latest'
   cache:
     description: 'Cache the lenv installation'
     required: false
@@ -24,7 +23,7 @@ runs:
   steps:
     -
       name: Determine OS and architecture
-      id: system-info
+      id: verify
       shell: bash
       run: |
         # Determine OS (first letter capitalized as per release assets)
@@ -52,6 +51,34 @@ runs:
           exit 1
         fi
 
+        # Validate version specification
+        read -r -a INPUT_VERSIONS <<< "${{ inputs.versions }}"
+        VERSIONS=()
+        for SPEC in "${INPUT_VERSIONS[@]}"; do
+          SPEC=$(echo "$SPEC" | xargs)
+          if [ -z "$SPEC" ]; then
+            echo "Error: Empty version specification is not allowed" >&2
+            exit 1
+          fi
+          case "$SPEC" in
+            *[[:space:]]*)
+              echo "Error: Invalid version specification: $SPEC" >&2
+              echo "Version specification must not contain spaces" >&2
+              exit 1
+              ;;
+            *)
+              VERSIONS+=("$SPEC")
+              ;;
+          esac
+        done
+
+        VERSIONS_STR="${VERSIONS[*]}"
+        echo "VERSIONS=${VERSIONS_STR}" >> $GITHUB_OUTPUT
+
+        # cache key must not contain spaces, so replace them with underscores
+        CACHE_VERSIONS="${VERSIONS_STR// /_}"
+        echo "CACHE_VERSIONS=${CACHE_VERSIONS}" >> $GITHUB_OUTPUT
+
     -
       name: Check for lenv cache
       id: cache
@@ -59,10 +86,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: .lenv
-        key: ${{ runner.os }}-${{ steps.system-info.outputs.ARCH }}-lenv-${{ inputs.lua-version }}-${{ inputs.luarocks-version }}
-        restore-keys: |
-          ${{ runner.os }}-${{ steps.system-info.outputs.ARCH }}-lenv-${{ inputs.lua-version }}-
-          ${{ runner.os }}-${{ steps.system-info.outputs.ARCH }}-lenv-
+        key: ${{ runner.os }}-${{ steps.verify.outputs.ARCH }}-lenv-${{ steps.verify.outputs.CACHE_VERSIONS }}
 
     -
       name: Install dependencies
@@ -73,15 +97,14 @@ runs:
         elif [ "$RUNNER_OS" == "macOS" ]; then
           brew install readline ncurses
         fi
-
     -
       name: Install lenv
       if: ${{ inputs.cache != 'true' || steps.cache.outputs.cache-hit != 'true' }}
       shell: bash
       run: |
-        LENV_VERSION="v0.9.0"
-        OS="${{ steps.system-info.outputs.OS_NAME }}"
-        ARCH="${{ steps.system-info.outputs.ARCH }}"
+        LENV_VERSION="v0.9.1"
+        OS="${{ steps.verify.outputs.OS_NAME }}"
+        ARCH="${{ steps.verify.outputs.ARCH }}"
 
         # Create temp directory for downloads
         WORK_DIR=$(pwd)
@@ -143,68 +166,72 @@ runs:
         # Fetch remote version lists
         lenv -p fetch
 
-        # Add lenv bin to PATH
-        echo "$(pwd)/.lenv/bin" >> $GITHUB_PATH
-        echo "$(lenv -p path bin)" >> $GITHUB_PATH
-
         # Clean up
         cd - > /dev/null
         rm -rf $TEMP_DIR
+
+    -
+      name: Set PATH environment variable
+      shell: bash
+      run: |
+        # Add lenv bin and lua bin to PATH
+        export PATH="$(pwd)/.lenv/bin:$PATH"
+        echo "$(pwd)/.lenv/bin" | tee -a $GITHUB_PATH
+        echo "$(lenv -p path bin)" | tee -a $GITHUB_PATH
 
     -
       name: Install Lua and LuaRocks
       if: ${{ inputs.cache != 'true' || steps.cache.outputs.cache-hit != 'true' }}
       shell: bash
       run: |
-        INSTALL_SPEC=""
-        PLATFORM="${{ steps.system-info.outputs.PLATFORM }}"
-
-        # Prepare Lua version part
-        if [[ "${{ inputs.lua-version }}" != "" ]]; then
-          INSTALL_SPEC="${{ inputs.lua-version }}"
-          # remove PLATFORM variables if prefixed with "lj-"
-          if [[ "${{ inputs.lua-version }}" == lj-* ]]; then
-            unset PLATFORM
+        # Install Lua and/or LuaRocks with the specified versions
+        read -r -a VERSIONS <<< "${{ steps.verify.outputs.VERSIONS }}"
+        for SPEC in "${VERSIONS[@]}"; do
+          # if lua version is not specified, and current lua version is not set,
+          # use the latest version as default
+          if [ -z "${SPEC%%:*}" ] && [ -z "$(lenv -p current lua)" ]; then
+            echo "Lua is not installed, using latest version as default"
+            SPEC="latest:${SPEC#:}"
           fi
-        fi
 
-        # Prepare LuaRocks version part
-        if [[ "${{ inputs.luarocks-version }}" != "" ]]; then
-          INSTALL_SPEC="${INSTALL_SPEC}:${{ inputs.luarocks-version }}"
-        fi
+          echo "Installing with spec: ${SPEC}"
 
-        # Install Lua and/or LuaRocks with the specified versions (in project mode)
-        echo "Installing with spec: ${INSTALL_SPEC}"
-        lenv -p install ${INSTALL_SPEC} ${PLATFORM}
+          if [[ "$SPEC" == lj-* ]]; then
+            # without PLATFORM variables if prefixed with "lj-"
+            lenv -p install "${SPEC}"
+          else
+            lenv -p install "${SPEC}" "${{ steps.verify.outputs.PLATFORM }}"
+          fi
+        done
 
     -
-      name: Setup PATH and environment variables
+      name: Set LUA_PATH and LUA_CPATH environment variables
       shell: bash
       run: |
-        export PATH="$(pwd)/.lenv/bin:$PATH"
-        export PATH="$(lenv -p path bin):$PATH"
+        # Add Lua lib and clib paths to environment variables
+        echo "export LUA_PATH and LUA_CPATH to environment variables"
+        LUA_PATH="$(lenv -p path lualib)"
+        LUA_CPATH="$(lenv -p path luaclib)"
+        # Output to both console and $GITHUB_ENV for debugging purposes
+        echo "LUA_PATH=$LUA_PATH" | tee -a $GITHUB_ENV
+        echo "LUA_CPATH=$LUA_CPATH" | tee -a $GITHUB_ENV
 
-        echo "$(pwd)/.lenv/bin" >> $GITHUB_PATH
-        echo "$(lenv -p path bin)" >> $GITHUB_PATH
-
-        if [[ "${{ inputs.lua-version }}" != "" ]]; then
-          lua -v
-          # Add Lua lib and clib paths to environment variables
-          echo "export LUA_PATH and LUA_CPATH to environment variables"
-          LUA_PATH="$(lenv -p path lualib)"
-          echo "LUA_PATH=$LUA_PATH" | tee -a $GITHUB_ENV
-          LUA_CPATH="$(lenv -p path luaclib)"
-          echo "LUA_CPATH=$LUA_CPATH" | tee -a $GITHUB_ENV
+    -
+      name: Use Lua and LuaRocks
+      if: ${{ inputs.active-version != '' }}
+      shell: bash
+      run: |
+        # if inputs.active-version is not set, throw an error
+        ACTIVE_VERSION="$(echo "${{ inputs.active-version }}" | xargs)"
+        if [ -z "$ACTIVE_VERSION" ]; then
+          echo "Error: No active version specified" >&2
+          exit 1
         fi
+        lenv -p use "$ACTIVE_VERSION"
 
-        if [[ "${{ inputs.luarocks-version }}" != "" ]]; then
-          luarocks --version
-          # Add LuaRocks bin to PATH
-          echo "$(luarocks path --lr-bin)" >> $GITHUB_PATH
-        fi
 
 outputs:
   cache-hit:
     description: 'Whether the cache was hit'
-    value: ${{ steps.cache.outputs.cache-hit }}
+    value: ${{ inputs.cache == 'true' && steps.cache.outputs.cache-hit == 'true' && 'true' || 'false' }}
 

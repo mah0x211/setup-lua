@@ -8,6 +8,9 @@ on:
         - '**.md'
         - 'LICENSE'
 
+env:
+    MULTI_VERSION: "5.1.5:3.8.0 lj-v2.1:3.11.1 5.3.6:3.9.2"
+
 jobs:
   test:
     name: Test Setup Lua Action
@@ -16,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        lua: ['5.1.5', '5.2.4', '5.3.6', '5.4.6', 'latest', 'lj-v2.1']
+        lua: ['5.1.5', '5.1.5:3.11.1', ':3.11.1', 'lj-v2.1']
 
     steps:
     -
@@ -24,14 +27,237 @@ jobs:
       uses: actions/checkout@v4
     -
       name: Self test
+      id: setup
       uses: ./
       with:
-        lua-version: ${{ matrix.lua }}
-        luarocks-version: 'latest'
+        versions: ${{ matrix.lua }}
+        cache: false
     -
       name: Verify installation
+      shell: bash
       run: |
-        lua -v
-        luarocks --version
+        if [[ "${{ steps.setup.outputs.cache-hit }}" != "false" ]]; then
+          echo "Error: it should not use cache in this test"
+          exit 1
+        fi
+
+        version="${{ matrix.lua }}"
+        echo "Matrix version: $version"
+
+        # extract the Lua and LuaRocks versions from the matrix spec
+        expected_lua="${version%%:*}"
+        expected_rocks="${version#*:}"
+        [ "$version" = "$expected_lua" ] && expected_rocks=""
+
+        # remove any leading/trailing whitespace
+        expected_lua="$(echo "$expected_lua" | xargs)"
+        expected_rocks="$(echo "$expected_rocks" | xargs)"
+
+        # remove leading 'lj-v' from Lua version if present
+        expected_lua="${expected_lua#lj-v}"
+
+        # verify the Lua version
+        if [ -n "$expected_lua" ] && [ "$expected_lua" != "latest" ]; then
+            lua_ver=$(lua -v 2>&1)
+            echo "$lua_ver"
+            echo "$lua_ver" | grep -Eq "(^|[^0-9])$expected_lua" || {
+                echo "Error: Lua version containing '$expected_lua' not found in output"
+                exit 1
+            }
+            echo "✓ Lua version check passed for spec: $expected_lua"
+        fi
+
+
+        # verify the LuaRocks version
+        if [ -n "$expected_rocks" ]; then
+            if [ "$expected_rocks" != "latest" ]; then
+                rocks_ver=$(luarocks --version 2>&1)
+                echo "$rocks_ver"
+                echo "$rocks_ver" | grep -Eq "(^|[^0-9])$expected_rocks" || {
+                    echo "Error: LuaRocks version containing '$expected_rocks' not found in output"
+                    lua -v
+                    exit 1
+                }
+                echo "✓ LuaRocks version check passed for spec: $expected_rocks"
+            fi
+
+            # Check it's working
+            luarocks install busted
+            busted --version
+        fi
+
+  test-multiple-installs:
+    name: Test Multiple Lua Versions Installation
+    runs-on: ubuntu-latest
+    steps:
+    -
+      name: Checkout Repository
+      uses: actions/checkout@v4
+    -
+      name: Setup Multiple Lua Versions
+      id: setup
+      uses: ./
+      with:
+        versions: $MULTI_VERSION
+        cache: true
+    -
+      name: Check Default Version
+      shell: bash
+      run: |
+        # confirm last installed version is active
+        echo "Default active version should be last installed version (5.3.6:3.9.2)"
+        lua_ver=$(lua -v 2>&1)
+        echo "$lua_ver"
+        echo "$lua_ver" | grep -Eq "(^|[^0-9])5\.3\.6" || {
+            echo "Error: Lua version 5.3.6 not found in output"
+            exit 1
+        }
+        luarocks_ver=$(luarocks --version 2>&1)
+        echo "$luarocks_ver"
+        echo "$luarocks_ver" | grep -Eq "(^|[^0-9])3\.9\.2" || {
+            echo "Error: LuaRocks version 3.9.2 not found in output"
+            exit 1
+        }
+        # confirm luarocks is working
         luarocks install busted
         busted --version
+    -
+      name: Change Active Version with lenv
+      shell: bash
+      run: |
+        read -r -a versions <<< "$MULTI_VERSION"
+        for version in ${versions[@]}; do
+            # change lua and luarocks version
+            echo "Switching to version: $version"
+            lenv -p use "$version"
+
+            # check the version of lua and luarocks are correct after switching
+            lua_ver=${version%%:*}
+            rocks_ver=${version#*:}
+            # remove leading 'lj-v' from Lua version if present
+            lua_ver="${lua_ver#lj-v}"
+
+            echo "$(lua -v 2>&1)" | grep -Eq "(^|[^0-9])$lua_ver" || {
+                echo "Error: Lua version $lua_ver not found in output"
+                exit 1
+            }
+            echo "$(luarocks --version 2>&1)" | grep -Eq "(^|[^0-9])$rocks_ver" || {
+                echo "Error: LuaRocks version $rocks_ver not found in output"
+                exit 1
+            }
+            echo "✓ Installed version check passed for spec: $version"
+        done
+
+  test-use-cache:
+    name: Use Cache
+    needs: test-multiple-installs
+    runs-on: ubuntu-latest
+    steps:
+    -
+      name: Checkout Repository
+      uses: actions/checkout@v4
+    -
+      name: Setup Lua with cache
+      id: setup
+      uses: ./
+      with:
+        versions: $MULTI_VERSION
+        cache: true
+    -
+      name: Verify cache hit
+      shell: bash
+      run: |
+        # Check cache hit status
+        echo "Cache status: ${{ steps.setup.outputs.cache-hit == 'true' && 'Cache hit' || 'Cache miss' }}"
+        if [[ "${{ steps.setup.outputs.cache-hit }}" != "true" ]]; then
+          echo "Error: expected 'Cache hit'"
+          exit 1
+        fi
+        echo "✓ Confirmed cache hit (expected for second job)"
+
+        # verify lua version
+        lua_ver=$(lua -v 2>&1)
+        echo "$lua_ver"
+        echo "$lua_ver" | grep -Eq "(^|[^0-9])5\.3\.6" || {
+            echo "Error: Lua version 5.3.6 not found in output after cache hit"
+            exit 1
+        }
+
+        # verify luarocks version
+        luarocks_ver=$(luarocks --version 2>&1)
+        echo "$luarocks_ver"
+        echo "$luarocks_ver" | grep -Eq "(^|[^0-9])3\.9\.2" || {
+            echo "Error: LuaRocks version 3.9.2 not found in output after cache hit"
+            exit 1
+        }
+
+        # confirm busted is working
+        echo "busted version: $(busted --version)"
+
+  test-active-version:
+    name: Test Active Version
+    needs: test-multiple-installs
+    runs-on: ubuntu-latest
+    strategy:
+        fail-fast: false
+        matrix:
+          lua: ['5.1.5:3.8.0', 'lj-v2.1:3.11.1', '5.3.6:3.9.2']
+    steps:
+    -
+      name: Checkout Repository
+      uses: actions/checkout@v4
+    -
+      name: Activate Lua ${{ matrix.lua }}
+      id: setup
+      uses: ./
+      with:
+        versions: $MULTI_VERSION
+        active-version: ${{ matrix.lua }}
+        cache: true
+    -
+      name: Verify Active Version
+      shell: bash
+      run: |
+        # Check cache hit status
+        echo "Cache status: ${{ steps.setup.outputs.cache-hit == 'true' && 'Cache hit' || 'Cache miss' }}"
+        if [[ "${{ steps.setup.outputs.cache-hit }}" != "true" ]]; then
+          echo "Error: expected 'Cache hit'"
+          exit 1
+        fi
+        echo "✓ Confirmed cache hit"
+
+        # extract the Lua and LuaRocks versions from the matrix version
+        version="${{ matrix.lua }}"
+        expected_lua="${version%%:*}"
+        expected_rocks="${version#*:}"
+        [ "$version" = "$expected_lua" ] && expected_rocks=""
+        # remove any leading/trailing whitespace
+        expected_lua="$(echo "$expected_lua" | xargs)"
+        expected_rocks="$(echo "$expected_rocks" | xargs)"
+        # remove leading 'lj-v' from lua version if present
+        expected_lua="${expected_lua#lj-v}"
+
+        # verify the Lua version
+        if [ -n "$expected_lua" ] && [ "$expected_lua" != "latest" ]; then
+            lua_ver=$(lua -v 2>&1)
+            echo "$lua_ver"
+            echo "$lua_ver" | grep -Eq "(^|[^0-9])$expected_lua" || {
+                echo "Error: Lua version containing '$expected_lua' not found in output"
+                exit 1
+            }
+            echo "✓ Lua version check passed for version: $expected_lua"
+        fi
+
+        # verify the LuaRocks version
+        if [ -n "$expected_rocks" ] && [ "$expected_rocks" != "latest" ]; then
+            rocks_ver=$(luarocks --version 2>&1)
+            echo "$rocks_ver"
+            echo "$rocks_ver" | grep -Eq "(^|[^0-9])$expected_rocks" || {
+                echo "Error: LuaRocks version containing '$expected_rocks' not found in output"
+                lua -v
+                exit 1
+            }
+            echo "✓ LuaRocks version check passed for version: $expected_rocks"
+        fi
+
+
